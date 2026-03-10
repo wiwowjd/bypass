@@ -4,22 +4,56 @@ from solver import get_turnstile_token
 
 app = Flask(__name__)
 
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "status": "running",
+        "service": "turnstile-solver"
+    })
+
+
 @app.route("/solve", methods=["POST"])
 def solve():
-    data = request.json
 
-    url = data.get("url")
-    sitekey = data.get("sitekey")
+    try:
 
-    result = asyncio.run(
-        get_turnstile_token(
-            url=url,
-            sitekey=sitekey,
-            browser_type="chromium",
-            headless=True
+        data = request.json
+
+        url = data.get("url")
+        sitekey = data.get("sitekey")
+        action = data.get("action")
+        cdata = data.get("cdata")
+
+        if not url or not sitekey:
+            return jsonify({
+                "status": "error",
+                "message": "url and sitekey required"
+            }), 400
+
+        result = asyncio.run(
+            get_turnstile_token(
+                url=url,
+                sitekey=sitekey,
+                action=action,
+                cdata=cdata,
+                browser_type="chromium",
+                headless=True
+            )
         )
+
+        return jsonify(result)
+
+    except Exception as e:
+
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=8080
     )
-
-    return jsonify(result)
-
-app.run(host="0.0.0.0", port=8080)
