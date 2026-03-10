@@ -1,6 +1,7 @@
 """
 Production-ready async Cloudflare Turnstile solver.
-Uses page.set_content() to inject Turnstile widget without routing tricks.
+Serves HTML from a blank page — bypasses CSP from target domain.
+Origin/Referer headers spoofed so CF validates against correct sitekey domain.
 Optimized for Railway / Docker headless environments.
 """
 
@@ -33,9 +34,7 @@ class TurnstileResult:
 
 
 # ---------------------------------------------------------------------------
-# HTML – minimal, clean, no race conditions
-# Turnstile JS is loaded synchronously via ?render=explicit
-# so we control exactly when render() is called.
+# HTML – served on about:blank, no CSP interference
 # ---------------------------------------------------------------------------
 
 _HTML_TEMPLATE = """\
@@ -58,10 +57,11 @@ _HTML_TEMPLATE = """\
         setTimeout(waitAndRender, 100);
         return;
       }
+      console.log('TURNSTILE_READY');
       turnstile.render('#ts', {
         sitekey:            '__SITEKEY__',
-        callback:           function(t){ window.__TURNSTILE_TOKEN__ = t; },
-        'error-callback':   function(c){ window.__TURNSTILE_ERROR__ = String(c || 'err'); },
+        callback:           function(t){ console.log('TOKEN_OK'); window.__TURNSTILE_TOKEN__ = t; },
+        'error-callback':   function(c){ console.warn('TOKEN_ERR:'+c); window.__TURNSTILE_ERROR__ = String(c||'err'); },
         'expired-callback': function(){ window.__TURNSTILE_TOKEN__ = null; window.__TURNSTILE_EXPIRED__ = true; },
         'refresh-expired':  'auto',
       });
@@ -73,7 +73,7 @@ _HTML_TEMPLATE = """\
 """
 
 # ---------------------------------------------------------------------------
-# Browser args – Railway / Docker
+# Browser args
 # ---------------------------------------------------------------------------
 
 _BROWSER_ARGS = [
@@ -138,44 +138,37 @@ class AsyncTurnstileSolver:
             locale="en-US",
             timezone_id="America/New_York",
             java_script_enabled=True,
-            # Spoof origin so Turnstile validation uses the correct domain
+            # Spoof Origin + Referer so CF validates against the correct domain
+            # without us ever loading the real page (which has a blocking CSP).
             extra_http_headers={
-                "Referer": url,
-                "Origin":  origin,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "same-origin",
+                "Referer":          url,
+                "Origin":           origin,
+                "Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language":  "en-US,en;q=0.9",
+                "Sec-Fetch-Dest":   "document",
+                "Sec-Fetch-Mode":   "navigate",
+                "Sec-Fetch-Site":   "same-origin",
             },
         )
         return ctx
 
-    async def _build_page(self, ctx: BrowserContext, url: str, sitekey: str) -> Page:
+    async def _build_page(self, ctx: BrowserContext, sitekey: str) -> Page:
         page = await ctx.new_page()
 
-        # Forward page console + errors to Railway logs
-        page.on("console", lambda m: logger.debug("[PAGE] %s %s", m.type, m.text))
+        page.on("console",  lambda m: logger.debug("[PAGE] %s %s", m.type, m.text))
         page.on("pageerror", lambda e: logger.warning("[PAGE-ERR] %s", e))
 
         html = _HTML_TEMPLATE.replace("__SITEKEY__", sitekey)
 
-        # Navigate to real URL first so cookies/origin are set correctly,
-        # then overwrite with our Turnstile HTML in place.
-        # This makes CF see the correct domain in the widget's origin check.
-        try:
-            await page.goto(url, wait_until="commit", timeout=20_000)
-        except Exception as exc:
-            logger.warning("Initial goto failed (ok): %s", exc)
-
-        # Overwrite page content — keeps the URL/origin intact
+        # Use set_content on a blank page — no CSP headers, Turnstile JS loads freely.
+        # Origin/Referer headers in the context handle CF domain validation.
         await page.set_content(html, wait_until="domcontentloaded")
 
         return page
 
     async def _poll(self, page: Page) -> tuple[Optional[str], Optional[str]]:
-        deadline = time.monotonic() + self.timeout
-        last_log = 0.0
+        deadline  = time.monotonic() + self.timeout
+        last_log  = 0.0
 
         while time.monotonic() < deadline:
             try:
@@ -194,8 +187,7 @@ class AsyncTurnstileSolver:
 
             if s.get("error"):
                 err = str(s["error"])
-                logger.warning("CF error: %s", err)
-                # Interactive challenge codes – keep waiting
+                logger.warning("CF error code: %s", err)
                 if err in ("300023", "300030", "300031", "600010"):
                     await asyncio.sleep(1)
                     continue
@@ -204,11 +196,9 @@ class AsyncTurnstileSolver:
             if s.get("expired"):
                 return None, "token-expired"
 
-            # Progress log every 10s
             now = time.monotonic()
             if now - last_log >= 10:
-                remaining = deadline - now
-                logger.info("Waiting for token… %.0fs remaining", remaining)
+                logger.info("Waiting… %.0fs left", deadline - now)
                 last_log = now
 
             await asyncio.sleep(0.25)
@@ -232,7 +222,7 @@ class AsyncTurnstileSolver:
             context = await self._create_context(browser, url)
 
             try:
-                page         = await self._build_page(context, url, sitekey)
+                page         = await self._build_page(context, sitekey)
                 token, error = await self._poll(page)
             finally:
                 await context.close()
@@ -270,10 +260,6 @@ async def get_turnstile_token(
     headless: bool = True,
     timeout: float = 60.0,
 ) -> dict:
-    """
-    Solve a Cloudflare Turnstile challenge.
-    Returns: {status, turnstile_value, elapsed_time_seconds, reason}
-    """
     solver = AsyncTurnstileSolver(headless=headless, timeout=timeout)
     return (await solver.solve(url, sitekey)).to_dict()
 
