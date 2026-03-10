@@ -2,4 +2,3 @@ flask
 gunicorn
 playwright
 patchright
-camoufox
