@@ -1,17 +1,16 @@
-from flask import Flask, request, jsonify
+import os
 import asyncio
+from flask import Flask, request, jsonify
 from solver import get_turnstile_token
 
 app = Flask(__name__)
 
-
-@app.route("/", methods=["GET"])
+@app.route("/")
 def home():
     return jsonify({
         "status": "running",
         "service": "turnstile-solver"
     })
-
 
 @app.route("/solve", methods=["POST"])
 def solve():
@@ -37,8 +36,8 @@ def solve():
                 sitekey=sitekey,
                 action=action,
                 cdata=cdata,
-                browser_type="chromium",
-                headless=True
+                headless=True,
+                browser_type="chromium"
             )
         )
 
@@ -53,7 +52,10 @@ def solve():
 
 
 if __name__ == "__main__":
+
+    port = int(os.environ.get("PORT", 8080))
+
     app.run(
         host="0.0.0.0",
-        port=8080
-    )
+        port=port
+        )
