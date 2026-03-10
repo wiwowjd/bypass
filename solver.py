@@ -105,7 +105,12 @@ class AsyncTurnstileSolver:
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-gpu",
-                "--no-first-run"
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-renderer-backgrounding"
             ]
         )
 
