@@ -19,10 +19,25 @@ class AsyncTurnstileSolver:
     <!DOCTYPE html>
     <html>
     <head>
-        <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async></script>
+        <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     </head>
     <body>
-        <!-- cf turnstile -->
+        <div id="cf"></div>
+
+        <script>
+        window.onload = function() {
+            turnstile.render('#cf', {
+                sitekey: '%SITEKEY%',
+                callback: function(token) {
+                    let input = document.createElement("input");
+                    input.type = "hidden";
+                    input.name = "cf-turnstile-response";
+                    input.value = token;
+                    document.body.appendChild(input);
+                }
+            });
+        };
+        </script>
     </body>
     </html>
     """
@@ -30,32 +45,20 @@ class AsyncTurnstileSolver:
     def __init__(self, headless=True):
         self.headless = headless
 
-    async def _setup_page(self, browser, url, sitekey, action=None, cdata=None):
+    async def _setup_page(self, browser, url, sitekey):
 
         page = await browser.new_page()
 
-        url_with_slash = url + "/" if not url.endswith("/") else url
+        url_with_slash = url if url.endswith("/") else url + "/"
 
-        turnstile_div = f'<div class="cf-turnstile" data-sitekey="{sitekey}"'
-
-        if action:
-            turnstile_div += f' data-action="{action}"'
-
-        if cdata:
-            turnstile_div += f' data-cdata="{cdata}"'
-
-        turnstile_div += "></div>"
-
-        html = self.HTML_TEMPLATE.replace(
-            "<!-- cf turnstile -->",
-            turnstile_div
-        )
+        html = self.HTML_TEMPLATE.replace("%SITEKEY%", sitekey)
 
         await page.route(
             url_with_slash,
             lambda route: route.fulfill(
                 body=html,
-                status=200
+                status=200,
+                content_type="text/html"
             )
         )
 
@@ -63,40 +66,32 @@ class AsyncTurnstileSolver:
 
         return page
 
-    async def _get_turnstile_response(self, page, attempts=10):
+    async def _get_turnstile_response(self, page, timeout=30):
 
-        for _ in range(attempts):
+        start = time.time()
+
+        while time.time() - start < timeout:
 
             try:
 
-                value = await page.input_value(
-                    "[name=cf-turnstile-response]"
-                )
+                token = await page.evaluate("""
+                () => {
+                    let el = document.querySelector('[name="cf-turnstile-response"]');
+                    return el ? el.value : null;
+                }
+                """)
 
-                if value:
-
-                    el = await page.query_selector(
-                        "[name=cf-turnstile-response]"
-                    )
-
-                    return await el.get_attribute("value")
-
-                else:
-
-                    await page.click(
-                        "//div[@class='cf-turnstile']",
-                        timeout=3000
-                    )
-
-                    await asyncio.sleep(1)
+                if token:
+                    return token
 
             except:
+                pass
 
-                await asyncio.sleep(1)
+            await asyncio.sleep(1)
 
         return None
 
-    async def solve(self, url, sitekey, action=None, cdata=None):
+    async def solve(self, url, sitekey):
 
         start = time.time()
 
@@ -108,22 +103,15 @@ class AsyncTurnstileSolver:
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
                 "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process"
+                "--no-first-run"
             ]
         )
 
         try:
 
-            page = await self._setup_page(
-                browser,
-                url,
-                sitekey,
-                action,
-                cdata
-            )
+            page = await self._setup_page(browser, url, sitekey)
 
             token = await self._get_turnstile_response(page)
 
@@ -153,19 +141,14 @@ class AsyncTurnstileSolver:
 async def get_turnstile_token(
     url,
     sitekey,
-    action=None,
-    cdata=None,
-    headless=True,
-    browser_type="chromium"
+    headless=True
 ):
 
     solver = AsyncTurnstileSolver(headless=headless)
 
     result = await solver.solve(
         url=url,
-        sitekey=sitekey,
-        action=action,
-        cdata=cdata
+        sitekey=sitekey
     )
 
     return result.__dict__
