@@ -3,7 +3,6 @@ import time
 from typing import Optional
 from dataclasses import dataclass
 from patchright.async_api import async_playwright
-from camoufox.async_api import AsyncCamoufox
 
 
 @dataclass
@@ -28,16 +27,8 @@ class AsyncTurnstileSolver:
     </html>
     """
 
-    def __init__(self, headless=True, browser_type="chromium", useragent=None):
-
+    def __init__(self, headless=True):
         self.headless = headless
-        self.browser_type = browser_type
-        self.useragent = useragent
-
-        self.browser_args = []
-
-        if useragent:
-            self.browser_args.append(f"--user-agent={useragent}")
 
     async def _setup_page(self, browser, url, sitekey, action=None, cdata=None):
 
@@ -55,7 +46,7 @@ class AsyncTurnstileSolver:
 
         turnstile_div += "></div>"
 
-        page_html = self.HTML_TEMPLATE.replace(
+        html = self.HTML_TEMPLATE.replace(
             "<!-- cf turnstile -->",
             turnstile_div
         )
@@ -63,7 +54,7 @@ class AsyncTurnstileSolver:
         await page.route(
             url_with_slash,
             lambda route: route.fulfill(
-                body=page_html,
+                body=html,
                 status=200
             )
         )
@@ -84,11 +75,11 @@ class AsyncTurnstileSolver:
 
                 if value:
 
-                    element = await page.query_selector(
+                    el = await page.query_selector(
                         "[name=cf-turnstile-response]"
                     )
 
-                    return await element.get_attribute("value")
+                    return await el.get_attribute("value")
 
                 else:
 
@@ -107,22 +98,22 @@ class AsyncTurnstileSolver:
 
     async def solve(self, url, sitekey, action=None, cdata=None):
 
-        start_time = time.time()
+        start = time.time()
 
-        if self.browser_type == "camoufox":
+        playwright = await async_playwright().start()
 
-            browser = await AsyncCamoufox(
-                headless=self.headless
-            ).start()
-
-        else:
-
-            playwright = await async_playwright().start()
-
-            browser = await playwright.chromium.launch(
-                headless=self.headless,
-                args=self.browser_args
-            )
+        browser = await playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process"
+            ]
+        )
 
         try:
 
@@ -136,7 +127,7 @@ class AsyncTurnstileSolver:
 
             token = await self._get_turnstile_response(page)
 
-            elapsed = round(time.time() - start_time, 3)
+            elapsed = round(time.time() - start, 3)
 
             if not token:
 
@@ -156,9 +147,7 @@ class AsyncTurnstileSolver:
         finally:
 
             await browser.close()
-
-            if self.browser_type != "camoufox":
-                await playwright.stop()
+            await playwright.stop()
 
 
 async def get_turnstile_token(
@@ -167,15 +156,10 @@ async def get_turnstile_token(
     action=None,
     cdata=None,
     headless=True,
-    browser_type="chromium",
-    useragent=None
+    browser_type="chromium"
 ):
 
-    solver = AsyncTurnstileSolver(
-        headless=headless,
-        browser_type=browser_type,
-        useragent=useragent
-    )
+    solver = AsyncTurnstileSolver(headless=headless)
 
     result = await solver.solve(
         url=url,
